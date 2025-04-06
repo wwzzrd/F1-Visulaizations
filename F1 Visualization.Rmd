@@ -1,0 +1,332 @@
+---
+title: "F1 Visualizations"
+description: |
+  A few graphics for visualizing F1 data and a short script for harvesting current points data from the F1 website.
+author:
+  - name: Eduard Schlenz
+    url: 
+    affiliation: 
+    affiliation_url:
+date: "`r Sys.Date()`"
+output: distill::distill_article
+---
+# Introduction
+This analysis explores the performance of Formula 1 teams and drivers from 1994 to 2025, visualizing their accumulated wins, wins per season, and the winning teams in each race. We will also explore trends in team dominance and seasonal variations in wins across different periods.
+
+```{r, message = FALSE}
+# Required libraries for data manipulation and visualization
+library(tidyverse)
+library(lubridate)
+library(jsonlite)
+library(rvest)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(httr)
+library(xml2)
+library(RColorBrewer)
+library(knitr)
+```
+
+# Read Data
+We begin by accessing the F1 race results using an API that provides historical results. The data includes season, race results, driver names, and constructor (team) information. We will collect this data to analyze the performance of teams and drivers.
+
+```{r, message = FALSE}
+# URL to fetch F1 race results from about 1994 to today
+results_url <- "https://api.jolpi.ca/ergast/f1/results.json?limit=100&offset=0"
+
+# Empty list to fill with content from ergast
+ergast_content <- list()
+
+# Loop to fetch data for all available seasons
+for (offset in seq(10000, 25400, by = 100)) {
+  url <- paste0(results_url, offset)
+  
+  response <- GET(url)
+
+   # Check if the request was successful
+  if (status_code(response) == 200) {
+    # Parse the JSON content
+    data <- fromJSON(content(response, "text"))
+    
+    # Append the data to the list
+    ergast_content <- append(ergast_content, list(data))
+    
+  } else {
+    # Handle error
+    print(paste("Error: ", status_code(response)))
+  }
+    # 0.05 Second delay to stay within API limit
+  Sys.sleep(0.05)
+} 
+# Takes about 1 minute to run
+```
+
+# Data Preparation: Race Results
+In this section, we extract the race results, including the winning drivers and teams, and filter out incomplete data. We focus on the driver and constructor information to analyze team and driver performance.
+
+```{r}
+
+# Extract race results and drivers performance
+races_list <- list()
+
+# Extract the Drivers data frame from each element in all_drivers[[1]] to all_drivers[[9]]
+for (i in 1:155) {
+  races_list[[i]] <- ergast_content[[i]][["MRData"]][["RaceTable"]][["Races"]]
+}
+races_df <- bind_rows(races_list)
+
+# Extract winning driver and constructor information
+results_list <- races_df[["Results"]]
+
+winnersd <- sapply(results_list, function(df) {
+  winner_row <- df[df$position == 1, ]
+  if (nrow(winner_row) > 0) {
+    return(winner_row$Driver$driverId)
+  } else {
+    return("NA")
+  }
+})
+
+winnerst <- sapply(results_list, function(df) {
+  winner_row <- df[df$position == 1, ]
+  if (nrow(winner_row) > 0) {
+    return(winner_row$Constructor$constructorId)
+  } else {
+    return("NA")
+  }
+})
+
+# Combine winner data into a data frame
+winnersd <- data.frame(driver = winnersd)
+winnerst <- data.frame(team = winnerst) 
+
+driver_df <- bind_cols(winnersd,winnerst)
+
+# Combine driver and team information with race data
+results_df_raw <- bind_cols(driver_df, races_df)
+
+# Filter out invalid data
+results_df_raw <- results_df_raw %>%
+  filter(!grepl("NA", driver))
+```
+
+# Data Preparation: Cleaned Data Frame
+Now, we clean the data by selecting only the relevant columns (driver, season, team, and race name) for further analysis.
+
+```{r}
+# Selecting only the relevant columns for analysis
+results_df <- results_df_raw %>%
+  select(driver, season, team, raceName)
+```
+
+# Visualization1: Stair Step Graph of Wins Over Time
+In this section, we visualize the cumulative wins for each team across all seasons using a stair-step graph. This graph highlights how the teams' performance has evolved over the years.
+
+```{r}
+# Accumulating team wins per season and visualizing using a stair-step graph
+results_wins_acc <- results_df %>%
+  group_by(season, team) %>%
+  count(team)
+
+# Adding cumulative wins for each team
+results_wins_acc <- results_wins_acc %>%
+  group_by(team) %>%
+  mutate(cum_n = cumsum(n))
+
+results_wins_acc$season <- as.numeric(results_wins_acc$season)
+
+team_list <- c("ferrari", "mclaren", "mercedes", "red_bull", "williams", "renault", "benetton", "jordan", "brawn", "stewart", "alphatauri")
+
+custom_team_colors <- c(
+  "ferrari"   = "#DC0000",  
+  "mclaren"   = "#FF8700",   
+  "mercedes"  = "#00D2BE",   
+  "red_bull"  = "#1E41FF", 
+  "williams"  = "#005AFF",  
+  "renault"   = "black",   
+  "benetton"  = "#00B140",   
+  "jordan"     = "#FFF500"  
+)
+
+results_wins_acc2 <- results_wins_acc %>%
+  filter(team %in% team_list)
+
+# Plotting the stair-step graph
+h = ggplot(results_wins_acc2, aes(x = season, y = cum_n, group = team, color = team)) +
+  geom_step(size = 1) +
+  theme_bw() +
+  theme(aspect.ratio = 4/3, axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+  scale_x_continuous(breaks = seq(1990, max(results_wins_acc$season), by = 5),
+                     labels = seq(1990, max(results_wins_acc$season), by = 5)) +
+  scale_color_manual(values = custom_team_colors) +
+  labs(x = "Season", y = "Accumulated Wins", color = "Teams")
+h
+
+```
+# Visualization2: Wins per Season
+Here, we show the number of wins per season for each team using a bar chart. This helps us to compare the performance of teams in different seasons.
+
+```{r, layout="l-page-outset", fig.width=12, fig.height=7}
+# Visualizing wins per season for each team
+custom_team_colors <- c(
+  "benetton"     = "darkgreen",
+  "mclaren"      = "#FF8700",
+  "williams"     = "purple",
+  "ferrari"      = "#DC0000",
+  "team_lotus"   = "gold",
+  "ligier"       = "turquoise",
+  "jordan"       = "#FFF500",
+  "stewart"      = "grey",
+  "renault"      = "black",
+  "honda"        = "red",
+  "bmw_sauber"   = "navy",
+  "toro_rosso"   = "#1E41FF",
+  "brawn"        = "limegreen",
+  "red_bull"     = "#1E41FF",
+  "lotus_f1"     = "gold",
+  "mercedes"     = "#00D2BE",
+  "alphatauri"   = "#1E41FF",
+  "racing_point" = "pink",
+  "alpine"       = "darkmagenta"
+)
+results_wins_acc3 <- results_wins_acc %>%
+  filter(season >1986)
+
+j = ggplot(results_wins_acc3, aes(x = as.factor(season), y = n, color = team, fill = team)) +
+  geom_bar(stat = "identity", color = "white") +
+  theme_bw() +
+  theme(aspect.ratio = 4/3, 
+        axis.text.x = element_text(angle = 90, size = 8, vjust = 0.35)) +
+        scale_fill_manual(values = custom_team_colors) +
+        labs(x = "Season", y = "Wins", fill = "Teams")
+j
+```
+
+# Visualization3: Heatmap of Race Results
+In this section, we visualize the winning teams for the top 25 races using a heatmap. The heatmap shows the distribution of winning teams across different seasons.
+
+```{r, layout="l-page-outset", fig.width=12, fig.height=7}
+# Preparing data for heatmap visualization
+results_gp <- results_df %>%
+  group_by(raceName) %>%
+  summarise(Count = n())
+
+# Transforming data for heatmap
+results_wins_gp2 <- results_df %>%
+  select(season, raceName, team) %>%
+  spread(season, team)
+
+# Joining with race count data
+results_gp_joined <- results_wins_gp2 %>%
+  left_join(results_gp, by = "raceName")
+
+# Filtering top 25 races for the heatmap
+results_gp_25 <- results_gp_joined %>%
+  arrange(desc(Count)) %>%
+  top_n(25, wt = Count) %>%
+  slice(1:41)
+
+# Pivoting data for heatmap
+results_gp_25_long <- results_gp_25 %>%
+  pivot_longer(cols = num_range("", 1994:2023),
+               names_to = "season",
+               values_to = "team")
+# Top 10 teams for highlighting in the heatmap
+team_counts <- results_gp_25_long %>%
+  count(team, sort = TRUE)
+
+top_10_teams <- team_counts %>%
+  slice_max(n, n = 11)
+
+# Adding category for top 10 teams
+results_gp_25_long <- results_gp_25_long %>%
+  mutate(team_category = ifelse(team %in% top_10_teams$team, as.character(team), "Others"))
+
+custom_team_colors <- c(
+  "ferrari"   = "#DC0000",   # Ferrari red
+  "brawn"     = "limegreen",
+  "mclaren"   = "#FF8700",   # Papaya orange (modern McLaren)
+  "mercedes"  = "#00D2BE",   # Mercedes teal
+  "red_bull"  = "#1E41FF",   # Red Bull blue
+  "williams"  = "purple",   # Williams blue
+  "renault"   = "black",   # Renault yellow
+  "benetton"  = "darkgreen",   # Benetton green
+  "jordan"    = "#FFF500",    # Honda red
+  "lotus_f1"  = "gold",    # Honda red
+  "Others"    = "lightgrey",
+  "NA"        = "white"
+)
+
+# Heatmap plot
+a = ggplot(results_gp_25_long, aes(x = season, y = raceName, fill = team_category)) +
+  geom_tile(na.rm = TRUE, color = "black", position = "identity") +
+  theme_classic() + 
+  #scale_fill_brewer(palette = "Set3") +
+  scale_fill_manual(values = custom_team_colors, na.value = "white") +
+  theme(aspect.ratio = 4/3,
+        axis.text.y = element_text(size = 8),
+        axis.text.x = element_text(angle = 90, size = 8, vjust = 0.35),
+        legend.position = "right",
+        legend.box = "horizontal",
+        legend.text = element_text(size = 8),
+        legend.key.size = unit(1, "cm"),
+        legend.key.width = unit(1, "cm"),
+        axis.line = element_blank(),
+        axis.ticks = element_blank()
+            )  +
+  labs(x = "Season", 
+       y = "Race (Top 25)",
+       fill = "Winning Team (Top 10)")
+a
+```
+
+# Web Scraping: F1 Team Names and Points
+In this section, we use rvest to scrape the names and points of F1 teams from the official website, then visualize the points of each team in a bar chart.
+
+```{r}
+# Read the F1 Teams page
+f1_html <- read_html("https://www.formula1.com/en/teams.html")
+
+
+# Scrape team names
+teamnames <- f1_html %>%
+  html_elements(".f1-heading") %>%
+  html_text2()
+
+indices <- seq(1, 50, by = 5)
+
+teamnames <- teamnames[indices]
+
+# Scrape points
+points <- f1_html %>%
+  html_elements(".f1-heading-wide") %>% 
+  html_text2() %>%
+  as.numeric()
+
+indices <- seq(1, 20, by = 2)
+
+points <- points[indices]
+
+# Combine into dataframe
+f1_df <- tibble(Team = teamnames, Points = points)
+
+# Visualizing team points
+u = ggplot(f1_df, aes(x = Points, y = reorder(Team, -Points))) +
+  geom_bar(stat = "identity", fill = "steelblue", color = "black") +
+  labs(x = "Points", y = "") +
+  theme_classic() +
+  theme(aspect.ratio = 4/3,
+        )
+u
+```
+
+# Conclusion
+The visualizations provide insights into the performance of Formula 1 teams and drivers from the last 30 years. The stair-step graph and heatmap show the dominance of certain teams over time, while the bar chart helps highlight individual season performances. The scraped data reveals the current performance of teams based on their points in the latest season.
+
+# Sources
+F1 Race Results: API from https://api.jolpi.ca/ergast
+
+F1 Team Information: https://www.formula1.com/en/teams.html
+
+
